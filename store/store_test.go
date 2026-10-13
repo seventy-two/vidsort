@@ -68,3 +68,22 @@ func TestFolders(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{`D:\Films`, `E:\`}, s.Folders)
 }
+
+func TestConverted(t *testing.T) {
+	dir := t.TempDir()
+	at := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	s, err := Open(dir)
+	require.NoError(t, err)
+	old := scan.Video{Path: `E:\big.mp4`, Size: 30_000}
+	now := scan.Video{Path: `E:\big.mp4`, Size: 8_000}
+	require.NoError(t, s.Converted(old, now, at))
+
+	s, err = Open(dir)
+	require.NoError(t, err)
+	assert.Equal(t, int64(22_000), s.Freed)
+	assert.True(t, s.IsKept(now))
+	assert.False(t, s.IsKept(old), "the original's size no longer matches")
+	log, err := os.ReadFile(filepath.Join(dir, "converted.log"))
+	require.NoError(t, err)
+	assert.Equal(t, "2026-10-13T12:00:00Z\t30000\t8000\tE:\\big.mp4\tE:\\big.mp4\r\n", string(log))
+}

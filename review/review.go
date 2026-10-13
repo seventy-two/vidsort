@@ -70,8 +70,9 @@ func (q *Queue) Keep() (scan.Video, bool) {
 	return v, ok
 }
 
-// Delete removes the current video. It can't be undone.
-func (q *Queue) Delete() (scan.Video, bool) {
+// Take removes the current video for good, because it's being deleted or
+// converted. It can't be undone.
+func (q *Queue) Take() (scan.Video, bool) {
 	return q.remove()
 }
 

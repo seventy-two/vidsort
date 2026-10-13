@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 	"unicode/utf16"
@@ -16,6 +18,7 @@ import (
 	"github.com/rodrigocfd/windigo/ui"
 	"github.com/rodrigocfd/windigo/win"
 
+	"github.com/seventy-two/vidsort/av1"
 	"github.com/seventy-two/vidsort/config"
 	"github.com/seventy-two/vidsort/mpv"
 	"github.com/seventy-two/vidsort/review"
@@ -37,6 +40,7 @@ const (
 	cmdVolDown
 	cmdVolUp
 	cmdMute
+	cmdConvert
 	cmdJump // cmdJump+1 to cmdJump+9 jump to 10% to 90%
 )
 
@@ -67,6 +71,9 @@ type app struct {
 	panel *panel
 	msg   string // latest message, shown on the status line
 
+	tools av1.Tools // ffmpeg, for AV1 conversions; FFmpeg is empty if it wasn't found
+	jobs  []*job    // queued conversions, the running one first
+
 	player  *mpv.Player
 	mpvCmds chan func(*mpv.Player) // run in order, off the UI thread
 	playing string                 // path loaded in mpv
@@ -87,6 +94,7 @@ type playerState struct {
 
 func newApp(cfg config.Config, mpvPath string, st *store.Store, folders []string) *app {
 	a := &app{cfg: cfg, folders: folders, mpvPath: mpvPath, st: st, mpvCmds: make(chan func(*mpv.Player), 32)}
+	a.tools = findTools(cfg.FFmpeg)
 
 	accel, _ := win.CreateAcceleratorTable(a.shortcuts()...)
 	a.wnd = ui.NewMain(ui.OptsMain().
@@ -140,6 +148,7 @@ func (a *app) shortcuts() []win.ACCEL {
 		key(co.VK_OEM_MINUS, cmdVolDown),
 		key(co.VK_OEM_PLUS, cmdVolUp), // the = key
 		key('M', cmdMute),
+		key('C', cmdConvert),
 	}
 	for i := uint16(1); i <= 9; i++ {
 		list = append(list, key(co.VK('0'+i), cmdJump+i))
@@ -167,6 +176,17 @@ func (a *app) events() {
 		go a.scan()
 		return 0
 	})
+	a.wnd.On().WmClose(func() {
+		if len(a.jobs) > 0 {
+			text, _ := a.jobStatus()
+			if !ui.MsgOkCancel(a.wnd, "vidsort", "A conversion is still running",
+				text+"\n\nQuitting stops it. The original stays as it was.", "Quit") {
+				return
+			}
+			a.stopJobs()
+		}
+		a.wnd.Hwnd().DestroyWindow()
+	})
 	a.wnd.On().WmDestroy(func() {
 		a.closing = true
 		if a.player != nil {
@@ -184,6 +204,7 @@ func (a *app) events() {
 	a.wnd.On().WmCommandAccelMenu(cmdVolDown, func() { a.addVolume(-5) })
 	a.wnd.On().WmCommandAccelMenu(cmdVolUp, func() { a.addVolume(5) })
 	a.wnd.On().WmCommandAccelMenu(cmdMute, a.toggleMute)
+	a.wnd.On().WmCommandAccelMenu(cmdConvert, a.convert)
 	a.wnd.On().WmCommandAccelMenu(cmdBack, func() { a.mpv(func(p *mpv.Player) error { return p.Seek(-seekStep) }) })
 	a.wnd.On().WmCommandAccelMenu(cmdForward, func() { a.mpv(func(p *mpv.Player) error { return p.Seek(seekStep) }) })
 	a.wnd.On().WmCommandAccelMenu(cmdSlower, func() { a.mpv(func(p *mpv.Player) error { return p.MultiplySpeed(1 / 1.1) }) })
@@ -229,6 +250,7 @@ func (a *app) startPlayer() {
 	// decisions come back to us as client-message events.
 	for key, msg := range map[string]string{
 		"k": "keep", "K": "keep", "DEL": "delete", "n": "skip", "N": "skip", "Ctrl+z": "undo",
+		"c": "convert", "C": "convert",
 	} {
 		p.BindMessage(key, "vidsort "+msg)
 	}
@@ -276,7 +298,10 @@ func (a *app) readEvents(p *mpv.Player) {
 			a.stateMu.Unlock()
 		case "client-message":
 			if len(ev.Args) == 2 && ev.Args[0] == "vidsort" {
-				a.ui(func() {
+				// From a goroutine of its own: ui waits for the UI thread,
+				// and the convert dialog keeps it busy for a while, during
+				// which this loop must keep reading mpv's events.
+				go a.ui(func() {
 					switch ev.Args[1] {
 					case "keep":
 						a.keep()
@@ -286,6 +311,8 @@ func (a *app) readEvents(p *mpv.Player) {
 						a.skip()
 					case "undo":
 						a.undo()
+					case "convert":
+						a.convert()
 					}
 				})
 			}
@@ -437,12 +464,29 @@ func (a *app) playerState() playerState {
 	return a.state
 }
 
-// tick redraws the panel when playback has moved on.
+// tick redraws the panel when playback or a conversion has moved on.
 func (a *app) tick() {
-	if st := a.playerState(); st != a.drawn {
+	if st := a.playerState(); st != a.drawn || a.checkJobs() {
 		a.drawn = st
 		a.panel.redraw()
 	}
+}
+
+// findTools locates ffmpeg and the ffprobe beside it, for NVIDIA AV1 encoding.
+func findTools(ffmpeg string) av1.Tools {
+	t := av1.Tools{Encoder: "av1_nvenc", GPUDecode: true}
+	path, err := exec.LookPath(ffmpeg)
+	if err != nil {
+		return t
+	}
+	probe := filepath.Join(filepath.Dir(path), "ffprobe.exe")
+	if _, err := os.Stat(probe); err != nil {
+		if probe, err = exec.LookPath("ffprobe.exe"); err != nil {
+			return t
+		}
+	}
+	t.FFmpeg, t.FFprobe = path, probe
+	return t
 }
 
 func (a *app) togglePause() { a.mpv((*mpv.Player).TogglePause) }
@@ -514,7 +558,7 @@ func (a *app) delete() {
 	if _, ok := a.Current(); !ok || !a.allowDecision() {
 		return
 	}
-	v, _ := a.q.Delete()
+	v, _ := a.q.Take()
 	a.fillList()
 	a.showCurrent() // loads the next file, so mpv lets go of this one
 	a.message("Deleting " + v.Name() + "…")

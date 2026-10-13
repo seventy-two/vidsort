@@ -76,18 +76,36 @@ func (s *Store) Unkeep(v scan.Video) error {
 // Deleted adds v to the running total and the deletion log, and saves.
 func (s *Store) Deleted(v scan.Video, now time.Time) error {
 	s.Freed += v.Size
-	f, err := os.OpenFile(filepath.Join(filepath.Dir(s.path), "deleted.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(f, "%s\t%d\t%s\r\n", now.Format(time.RFC3339), v.Size, v.Path)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
+	if err := s.log("deleted.log", "%s\t%d\t%s", now.Format(time.RFC3339), v.Size, v.Path); err != nil {
 		return err
 	}
 	return s.save()
+}
+
+// Converted records that old was replaced by a smaller copy, now: the
+// saving goes on the running total, a line on the conversion log, and the
+// new file counts as kept.
+func (s *Store) Converted(old, now scan.Video, at time.Time) error {
+	s.Freed += old.Size - now.Size
+	s.Kept[key(now.Path)] = Kept{Size: now.Size, At: at}
+	if err := s.log("converted.log", "%s\t%d\t%d\t%s\t%s",
+		at.Format(time.RFC3339), old.Size, now.Size, old.Path, now.Path); err != nil {
+		return err
+	}
+	return s.save()
+}
+
+// log appends a line to a log file beside decisions.json.
+func (s *Store) log(name, format string, args ...any) error {
+	f, err := os.OpenFile(filepath.Join(filepath.Dir(s.path), name), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(f, format+"\r\n", args...)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // SetFolders remembers the folders being looked through and saves.

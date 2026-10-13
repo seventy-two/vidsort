@@ -14,7 +14,7 @@ import (
 )
 
 // panelHeight is the height of the controls under the video (before DPI scaling).
-const panelHeight = 142
+const panelHeight = 166
 
 const wmMouseWheel co.WM = 0x020a
 
@@ -28,6 +28,7 @@ const (
 	tMute
 	tVolume
 	tKeep
+	tConvert
 	tDelete
 	tSkip
 	tUndo
@@ -36,7 +37,7 @@ const (
 // panelLayout is where everything in the panel goes, for a given width.
 type panelLayout struct {
 	play, posText, seek, durText, mute, volume win.RECT
-	info, hint, status                         win.RECT
+	info, hint, job, jobBar, status            win.RECT
 	buttons                                    []button
 }
 
@@ -74,15 +75,17 @@ func layoutPanel(width int) panelLayout {
 		label string
 		w     int
 	}{
-		{tKeep, "Keep  (K)", 120}, {tDelete, "Delete  (Del)", 120},
-		{tSkip, "Skip  (N)", 104}, {tUndo, "Undo keep  (Ctrl+Z)", 160},
+		{tKeep, "Keep  (K)", 104}, {tConvert, "To AV1…  (C)", 118}, {tDelete, "Delete  (Del)", 116},
+		{tSkip, "Skip  (N)", 96}, {tUndo, "Undo keep  (Ctrl+Z)", 150},
 	} {
 		l.buttons = append(l.buttons, button{b.t, b.label, rect(x, y, d(b.w), h)})
 		x += d(b.w) + d(8)
 	}
 	l.hint = rect(x+d(8), y, w-x-d(20), h)
 
-	l.status = rect(d(12), ui.DpiY(114), w-d(24), ui.DpiY(20))
+	l.jobBar = rect(d(12), ui.DpiY(116), d(120), ui.DpiY(18))
+	l.job = rect(d(142), ui.DpiY(116), w-d(154), ui.DpiY(18))
+	l.status = rect(d(12), ui.DpiY(140), w-d(24), ui.DpiY(20))
 	return l
 }
 
@@ -243,6 +246,8 @@ func (p *panel) buttonUp(m ui.WmMouse) {
 			p.a.skip()
 		case tUndo:
 			p.a.undo()
+		case tConvert:
+			p.a.convert()
 		}
 	}
 	p.redraw()
@@ -263,29 +268,7 @@ func (p *panel) enabled(t target) bool {
 	}
 }
 
-// paint draws into an off-screen bitmap and copies it over in one go, so
-// the panel never flickers.
-func (p *panel) paint() {
-	hwnd := p.ctl.Hwnd()
-	var ps win.PAINTSTRUCT
-	hdc, _ := hwnd.BeginPaint(&ps)
-	defer hwnd.EndPaint(&ps)
-
-	rc, _ := hwnd.GetClientRect()
-	size := win.SIZE{Cx: rc.Right, Cy: rc.Bottom}
-	mem, _ := hdc.CreateCompatibleDC()
-	bmp, _ := hdc.CreateCompatibleBitmap(int(size.Cx), int(size.Cy))
-	oldBmp, _ := mem.SelectObjectBmp(bmp)
-	oldFont, _ := mem.SelectObjectFont(p.fonts.text)
-
-	p.draw(mem, rc)
-	hdc.BitBlt(win.POINT{}, size, mem, win.POINT{}, co.ROP_SRCCOPY)
-
-	mem.SelectObjectFont(oldFont)
-	mem.SelectObjectBmp(oldBmp)
-	bmp.DeleteObject()
-	mem.DeleteDC()
-}
+func (p *panel) paint() { paintBuffered(p.ctl.Hwnd(), p.fonts.text, p.draw) }
 
 func (p *panel) draw(hdc win.HDC, rc win.RECT) {
 	a := p.a
@@ -361,6 +344,10 @@ func (p *panel) draw(hdc win.HDC, rc win.RECT) {
 			bg = colKeepHot
 		case b.t == tKeep:
 			bg = colKeep
+		case b.t == tConvert && hot(b.t):
+			bg = colConvertHot
+		case b.t == tConvert:
+			bg = colConvert
 		case b.t == tDelete && hot(b.t):
 			bg = colDeleteHot
 		case b.t == tDelete:
@@ -374,8 +361,13 @@ func (p *panel) draw(hdc win.HDC, rc win.RECT) {
 		roundRect(hdc, b.rc, bg, ui.DpiX(6))
 		text(hdc, p.fonts.bold, b.label, b.rc, fg, co.DT_CENTER)
 	}
-	text(hdc, p.fonts.text, "Space pause · ←/→ 10s · 1–9 jump · [ ] speed · - = volume · M mute",
-		l.hint, colDim, co.DT_LEFT)
+	text(hdc, p.fonts.text, "Space pause · ←/→ 10s · 1–9 jump · M mute", l.hint, colDim, co.DT_LEFT)
+
+	// Conversions.
+	if job, done := a.jobStatus(); job != "" {
+		bar(hdc, l.jobBar, done, false)
+		text(hdc, p.fonts.text, job, l.job, colText, co.DT_LEFT|co.DT_END_ELLIPSIS)
+	}
 
 	// Status line.
 	status := ""
@@ -389,6 +381,29 @@ func (p *panel) draw(hdc win.HDC, rc win.RECT) {
 		status += a.msg
 	}
 	text(hdc, p.fonts.text, status, l.status, colDim, co.DT_LEFT|co.DT_END_ELLIPSIS)
+}
+
+// paintBuffered handles WM_PAINT by drawing into an off-screen bitmap and
+// copying it over in one go, so the window never flickers.
+func paintBuffered(hwnd win.HWND, font win.HFONT, draw func(win.HDC, win.RECT)) {
+	var ps win.PAINTSTRUCT
+	hdc, _ := hwnd.BeginPaint(&ps)
+	defer hwnd.EndPaint(&ps)
+
+	rc, _ := hwnd.GetClientRect()
+	size := win.SIZE{Cx: rc.Right, Cy: rc.Bottom}
+	mem, _ := hdc.CreateCompatibleDC()
+	bmp, _ := hdc.CreateCompatibleBitmap(int(size.Cx), int(size.Cy))
+	oldBmp, _ := mem.SelectObjectBmp(bmp)
+	oldFont, _ := mem.SelectObjectFont(font)
+
+	draw(mem, rc)
+	hdc.BitBlt(win.POINT{}, size, mem, win.POINT{}, co.ROP_SRCCOPY)
+
+	mem.SelectObjectFont(oldFont)
+	mem.SelectObjectBmp(oldBmp)
+	bmp.DeleteObject()
+	mem.DeleteDC()
 }
 
 // bar draws a thin track filled to frac, thicker with a knob when hot.
@@ -447,5 +462,16 @@ func text(hdc win.HDC, font win.HFONT, s string, rc win.RECT, c win.COLORREF, fl
 	old, _ := hdc.SelectObjectFont(font)
 	hdc.SetTextColor(c)
 	hdc.DrawText(s, &rc, flags|co.DT_SINGLELINE|co.DT_VCENTER|co.DT_NOPREFIX)
+	hdc.SelectObjectFont(old)
+}
+
+// wrapText draws s over as many lines as it needs, centred vertically in rc.
+func wrapText(hdc win.HDC, font win.HFONT, s string, rc win.RECT, c win.COLORREF) {
+	old, _ := hdc.SelectObjectFont(font)
+	hdc.SetTextColor(c)
+	measure := rc
+	h, _ := hdc.DrawText(s, &measure, co.DT_LEFT|co.DT_WORDBREAK|co.DT_NOPREFIX|co.DT_CALCRECT)
+	rc.Top += (rc.Bottom - rc.Top - int32(h)) / 2
+	hdc.DrawText(s, &rc, co.DT_LEFT|co.DT_WORDBREAK|co.DT_NOPREFIX)
 	hdc.SelectObjectFont(old)
 }

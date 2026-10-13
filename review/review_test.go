@@ -45,7 +45,7 @@ func TestKeepDeleteAndUndo(t *testing.T) {
 	assert.Equal(t, "b", cur(q))
 
 	q.Skip() // now on c
-	v, _ = q.Delete()
+	v, _ = q.Take()
 	assert.Equal(t, "c", v.Path)
 	assert.Equal(t, "b", cur(q), "deleting the last item moves back to the new last")
 
@@ -68,7 +68,7 @@ func TestEmptyQueue(t *testing.T) {
 	q.Skip()
 
 	q = New([]scan.Video{{Path: "x"}}, scan.BySize)
-	q.Delete()
+	q.Take()
 	_, ok = q.Current()
 	assert.False(t, ok)
 }

@@ -17,11 +17,14 @@ type Config struct {
 	MPV string `json:"mpv"`
 	// MinSizeMB hides files smaller than this many megabytes.
 	MinSizeMB int64 `json:"minSizeMB"`
+	// FFmpeg is the path to ffmpeg.exe, used to convert to AV1; ffprobe.exe
+	// is expected beside it. A bare name is looked up on PATH.
+	FFmpeg string `json:"ffmpeg"`
 }
 
 // Load reads dir/config.json. A missing file gives the defaults.
 func Load(dir string) (Config, error) {
-	c := Config{MPV: "mpv.exe"}
+	c := Config{MPV: "mpv.exe", FFmpeg: "ffmpeg.exe"}
 	path := filepath.Join(dir, "config.json")
 	b, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
