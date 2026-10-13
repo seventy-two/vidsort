@@ -18,10 +18,10 @@ func TestLoadDefaults(t *testing.T) {
 func TestLoad(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"),
-		[]byte("\xef\xbb\xbf"+`{"roots": ["D:\\", "E:\\"], "minSizeMB": 50}`), 0o644))
+		[]byte("\xef\xbb\xbf"+`{"mpv": "C:\\mpv\\mpv.exe", "minSizeMB": 50}`), 0o644))
 	c, err := Load(dir)
 	require.NoError(t, err)
-	assert.Equal(t, Config{MPV: "mpv.exe", Roots: []string{`D:\`, `E:\`}, MinSizeMB: 50}, c)
+	assert.Equal(t, Config{MPV: `C:\mpv\mpv.exe`, MinSizeMB: 50}, c)
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{`), 0o644))
 	_, err = Load(dir)

@@ -1,11 +1,13 @@
 //go:build windows
 
-// vidsort plays the video files on a set of drives one at a time, largest
-// first, with mpv embedded in its window, so each can be kept or deleted.
+// vidsort plays the video files in the folders you pick one at a time,
+// largest first, with mpv embedded in its window, so each can be kept or
+// deleted.
 //
 // Usage: vidsort [-mpv path] [-min MB] [folder ...]
 //
-// Folders and settings default to %APPDATA%\vidsort\config.json.
+// With no folders given it asks for them. Settings default to
+// %APPDATA%\vidsort\config.json.
 package main
 
 import (
@@ -46,13 +48,6 @@ func run() error {
 	flag.StringVar(&cfg.MPV, "mpv", cfg.MPV, "path to mpv.exe")
 	flag.Int64Var(&cfg.MinSizeMB, "min", cfg.MinSizeMB, "skip files smaller than this many MB")
 	flag.Parse()
-	if flag.NArg() > 0 {
-		cfg.Roots = flag.Args()
-	}
-	if len(cfg.Roots) == 0 {
-		return fmt.Errorf("No folders to look through.\n\nPass them on the command line, or list them as \"roots\" in\n%s",
-			filepath.Join(dir, "config.json"))
-	}
 
 	mpvPath, err := exec.LookPath(cfg.MPV)
 	if err != nil {
@@ -65,6 +60,26 @@ func run() error {
 		return err
 	}
 
-	newApp(cfg, mpvPath, st).run()
+	folders := flag.Args()
+	if len(folders) == 0 {
+		// The folder picker is a COM object, which needs COM set up on this thread.
+		win.CoInitializeEx(co.COINIT_APARTMENTTHREADED | co.COINIT_DISABLE_OLE1DDE)
+		defer win.CoUninitialize()
+		start := ""
+		if len(st.Folders) > 0 {
+			start = st.Folders[0]
+		}
+		if folders, err = pickFolders(start); err != nil {
+			return err
+		}
+		if len(folders) == 0 {
+			return nil // cancelled
+		}
+	}
+	if err := st.SetFolders(folders); err != nil {
+		return err
+	}
+
+	newApp(cfg, mpvPath, st, folders).run()
 	return nil
 }

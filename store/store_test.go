@@ -56,3 +56,15 @@ func TestOpenRejectsCorruptFile(t *testing.T) {
 	_, err := Open(dir)
 	assert.Error(t, err)
 }
+
+func TestFolders(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	require.NoError(t, err)
+	assert.Empty(t, s.Folders)
+	require.NoError(t, s.SetFolders([]string{`D:\Films`, `E:\`}))
+
+	s, err = Open(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{`D:\Films`, `E:\`}, s.Folders)
+}

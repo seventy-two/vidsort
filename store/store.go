@@ -1,5 +1,6 @@
 // Package store remembers which videos the user chose to keep, so they
-// don't come up again, and logs what was deleted.
+// don't come up again, logs what was deleted, and remembers the folders
+// last looked through.
 package store
 
 import (
@@ -28,6 +29,8 @@ type Store struct {
 	Kept map[string]Kept `json:"kept"` // keyed by lower-case path
 	// Freed is the total size of everything deleted so far.
 	Freed int64 `json:"freed"`
+	// Folders are the folders picked last time, where the picker starts.
+	Folders []string `json:"folders,omitempty"`
 }
 
 // Open loads dir/decisions.json, starting empty if it doesn't exist yet.
@@ -84,6 +87,12 @@ func (s *Store) Deleted(v scan.Video, now time.Time) error {
 	if err != nil {
 		return err
 	}
+	return s.save()
+}
+
+// SetFolders remembers the folders being looked through and saves.
+func (s *Store) SetFolders(folders []string) error {
+	s.Folders = folders
 	return s.save()
 }
 

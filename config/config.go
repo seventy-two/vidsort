@@ -15,8 +15,6 @@ import (
 type Config struct {
 	// MPV is the path to mpv.exe; a bare name is looked up on PATH.
 	MPV string `json:"mpv"`
-	// Roots are the folders (or whole drives, like `D:\`) to look through.
-	Roots []string `json:"roots"`
 	// MinSizeMB hides files smaller than this many megabytes.
 	MinSizeMB int64 `json:"minSizeMB"`
 }

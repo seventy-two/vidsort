@@ -1,8 +1,11 @@
 # vidsort
 
-A Windows app for clearing out video files. It finds every video under the
-folders you give it, plays them one at a time (largest first by default) in
-an embedded [mpv](https://mpv.io), and lets you keep or delete each one.
+A Windows app for clearing out video files. It asks which folders to look
+through (pick several at once with Ctrl or Shift, or whole drives), finds
+every video under them, plays them one at a time (largest first by default)
+in an embedded [mpv](https://mpv.io), and lets you keep or delete each one.
+The picker opens where you were last time, so **Look through** straight
+away repeats the last choice; cancelling it closes vidsort.
 
 Deleting is **permanent**: files don't go to the Recycle Bin.
 
@@ -36,20 +39,21 @@ the play/pause and mute buttons. The window is dark throughout.
 ```json
 {
   "mpv": "C:\\path\\to\\mpv.exe",
-  "roots": ["D:\\", "E:\\"],
   "minSizeMB": 0
 }
 ```
 
 - `mpv`: path to mpv.exe (a bare name is looked up on `PATH`).
-- `roots`: folders or whole drives to look through. `$RECYCLE.BIN`,
-  `System Volume Information` and similar are skipped.
 - `minSizeMB`: hide files smaller than this.
 
 Command-line arguments override the file: `vidsort.exe [-mpv path] [-min MB] [folder ...]`.
+Folders given there skip the picker.
+
+`$RECYCLE.BIN`, `System Volume Information` and similar are always skipped.
 
 The same folder holds `decisions.json` (kept files, matched on path and
-size, so a file that changes comes up again, plus the total freed) and
+size, so a file that changes comes up again, the total freed and the
+folders picked last) and
 `deleted.log` (one tab-separated line per deleted file: time, size, path).
 
 ## How it works
@@ -72,10 +76,10 @@ holds the colours and darkens the list, its header and the title bar.
 | --- | --- |
 | `scan` | Finds video files and sorts them |
 | `review` | The queue: current file, keep, delete, skip, undo |
-| `store` | Saves kept files and the deletion log |
+| `store` | Saves kept files, the deletion log and the last folders |
 | `mpv` | IPC client, and starting mpv embedded in a window |
 | `config` | Reads `config.json` |
-| `main` | The window: `app.go` (layout, keys, mpv), `panel.go` (controls under the video), `theme.go` (dark theme) |
+| `main` | The window: `app.go` (layout, keys, mpv), `panel.go` (controls under the video), `theme.go` (dark theme), `pick.go` (folder picker) |
 
 ## Build
 

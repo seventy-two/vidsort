@@ -56,6 +56,7 @@ var columnOrder = map[int]scan.Order{
 
 type app struct {
 	cfg     config.Config
+	folders []string // looked through for videos
 	mpvPath string
 	st      *store.Store
 	q       *review.Queue // nil until the scan finishes
@@ -84,12 +85,12 @@ type playerState struct {
 	paused, muted    bool
 }
 
-func newApp(cfg config.Config, mpvPath string, st *store.Store) *app {
-	a := &app{cfg: cfg, mpvPath: mpvPath, st: st, mpvCmds: make(chan func(*mpv.Player), 32)}
+func newApp(cfg config.Config, mpvPath string, st *store.Store, folders []string) *app {
+	a := &app{cfg: cfg, folders: folders, mpvPath: mpvPath, st: st, mpvCmds: make(chan func(*mpv.Player), 32)}
 
 	accel, _ := win.CreateAcceleratorTable(a.shortcuts()...)
 	a.wnd = ui.NewMain(ui.OptsMain().
-		Title("vidsort").
+		Title(windowTitle(folders)).
 		ClassBrush(solidBrush(colBg)).
 		Size(ui.Dpi(1400, 860)).
 		Style(co.WS_CAPTION | co.WS_SYSMENU | co.WS_CLIPCHILDREN | co.WS_BORDER | co.WS_VISIBLE |
@@ -147,6 +148,14 @@ func (a *app) shortcuts() []win.ACCEL {
 }
 
 func (a *app) run() { a.wnd.RunAsMain() }
+
+// windowTitle names the folders being looked through.
+func windowTitle(folders []string) string {
+	if len(folders) == 1 {
+		return "vidsort · " + folders[0]
+	}
+	return fmt.Sprintf("vidsort · %s and %d more", folders[0], len(folders)-1)
+}
 
 func (a *app) events() {
 	a.wnd.On().WmCreate(func(_ ui.WmCreate) int {
@@ -321,7 +330,7 @@ func (a *app) fatal(err error) {
 // scan finds the videos (off the UI thread), then fills the list.
 func (a *app) scan() {
 	unreadable := 0
-	found := scan.Walk(a.cfg.Roots,
+	found := scan.Walk(a.folders,
 		func(string, error) { unreadable++ },
 		func(n int) { a.ui(func() { a.message(fmt.Sprintf("Scanning… %d videos so far", n)) }) })
 
