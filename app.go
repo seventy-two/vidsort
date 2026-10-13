@@ -34,12 +34,15 @@ const (
 	cmdForward
 	cmdSlower
 	cmdFaster
+	cmdVolDown
+	cmdVolUp
+	cmdMute
 	cmdJump // cmdJump+1 to cmdJump+9 jump to 10% to 90%
 )
 
 const (
-	timerClock = 1
-	seekStep   = 10 // seconds moved by the arrow keys
+	timerTick = 1  // redraws the seek bar while playing
+	seekStep  = 10 // seconds moved by the arrow keys
 	// decisionGap is the shortest time between two keep/delete key presses;
 	// anything quicker, such as a held-down Delete key, is ignored.
 	decisionGap = 400 * time.Millisecond
@@ -57,12 +60,11 @@ type app struct {
 	st      *store.Store
 	q       *review.Queue // nil until the scan finishes
 
-	wnd                                  *ui.Main
-	video                                *ui.Control
-	list                                 *ui.ListView
-	info                                 *ui.Static
-	btnKeep, btnDelete, btnSkip, btnUndo *ui.Button
-	status                               *ui.StatusBar
+	wnd   *ui.Main
+	video *ui.Control
+	list  *ui.ListView
+	panel *panel
+	msg   string // latest message, shown on the status line
 
 	player  *mpv.Player
 	mpvCmds chan func(*mpv.Player) // run in order, off the UI thread
@@ -71,8 +73,15 @@ type app struct {
 	closing bool
 	lastKey time.Time // last keep/delete press, for decisionGap
 
-	clockMu  sync.Mutex
-	pos, dur float64 // playback position and length, from mpv's events
+	stateMu sync.Mutex
+	state   playerState // from mpv's property-change events
+	drawn   playerState // what the panel last showed
+}
+
+// playerState is what the panel shows about playback.
+type playerState struct {
+	pos, dur, volume float64
+	paused, muted    bool
 }
 
 func newApp(cfg config.Config, mpvPath string, st *store.Store) *app {
@@ -81,6 +90,7 @@ func newApp(cfg config.Config, mpvPath string, st *store.Store) *app {
 	accel, _ := win.CreateAcceleratorTable(a.shortcuts()...)
 	a.wnd = ui.NewMain(ui.OptsMain().
 		Title("vidsort").
+		ClassBrush(solidBrush(colBg)).
 		Size(ui.Dpi(1400, 860)).
 		Style(co.WS_CAPTION | co.WS_SYSMENU | co.WS_CLIPCHILDREN | co.WS_BORDER | co.WS_VISIBLE |
 			co.WS_MINIMIZEBOX | co.WS_MAXIMIZEBOX | co.WS_SIZEBOX).
@@ -88,49 +98,25 @@ func newApp(cfg config.Config, mpvPath string, st *store.Store) *app {
 
 	black, _ := win.GetStockObject(co.STOCK_BLACK_BRUSH)
 	a.video = ui.NewControl(a.wnd, ui.OptsControl().
-		Position(0, 0).Size(ui.Dpi(966, 750)).
+		Position(0, 0).Size(ui.Dpi(966, 860-panelHeight)).
 		ClassBrush(win.HBRUSH(black)).
+		ExStyle(co.WS_EX_LEFT). // no border
 		Layout(ui.LAY_RESIZE_RESIZE))
 
 	a.list = ui.NewListView(a.wnd, ui.OptsListView().
-		Position(ui.Dpi(970, 0)).Size(ui.Dpi(430, 838)).
+		Position(ui.Dpi(970, 0)).Size(ui.Dpi(430, 860)).
 		// Owner data: the list asks for each visible row's text, so tens of
 		// thousands of files cost nothing to show or re-sort.
 		CtrlStyle(co.LVS_REPORT|co.LVS_SHOWSELALWAYS|co.LVS_SINGLESEL|co.LVS_OWNERDATA).
 		CtrlExStyle(co.LVS_EX_FULLROWSELECT|co.LVS_EX_DOUBLEBUFFER).
+		WndExStyle(co.WS_EX_LEFT). // no border
 		Column("Size", ui.DpiX(70)).
 		Column("Modified", ui.DpiX(80)).
 		Column("Name", ui.DpiX(170)).
 		Column("Folder", ui.DpiX(200)).
 		Layout(ui.LAY_MOVE_RESIZE))
 
-	a.info = ui.NewStatic(a.wnd, ui.OptsStatic().
-		Position(ui.Dpi(10, 758)).Size(ui.Dpi(950, 20)).
-		CtrlStyle(co.SS_LEFT|co.SS_NOPREFIX|co.SS_ENDELLIPSIS).
-		Text("Looking for videos…").
-		Layout(ui.LAY_RESIZE_MOVE))
-
-	button := func(text string, x, w int) *ui.Button {
-		return ui.NewButton(a.wnd, ui.OptsButton().
-			Text(text).Position(ui.Dpi(x, 784)).Width(ui.DpiX(w)).Height(ui.DpiY(32)).
-			Layout(ui.LAY_HOLD_MOVE))
-	}
-	a.btnKeep = button("Keep  (K)", 10, 110)
-	a.btnDelete = button("Delete  (Del)", 126, 110)
-	a.btnSkip = button("Skip  (N)", 242, 110)
-	a.btnUndo = button("Undo keep  (Ctrl+Z)", 358, 140)
-
-	ui.NewStatic(a.wnd, ui.OptsStatic().
-		Position(ui.Dpi(512, 792)).Size(ui.Dpi(450, 20)).
-		CtrlStyle(co.SS_LEFT|co.SS_NOPREFIX|co.SS_ENDELLIPSIS).
-		Text("Space pause · ←/→ 10s · 1–9 jump to 10–90% · [ ] speed · click a column to sort").
-		Layout(ui.LAY_RESIZE_MOVE))
-
-	a.status = ui.NewStatusBar(a.wnd, ui.OptsStatusBar().
-		FixedPart(ui.DpiX(190), "").
-		FixedPart(ui.DpiX(130), "").
-		FixedPart(ui.DpiX(110), "").
-		FlexPart(1, ""))
+	a.panel = newPanel(a)
 
 	a.events()
 	return a
@@ -150,6 +136,9 @@ func (a *app) shortcuts() []win.ACCEL {
 		key(co.VK_RIGHT, cmdForward),
 		key(co.VK_OEM_4, cmdSlower), // [
 		key(co.VK_OEM_6, cmdFaster), // ]
+		key(co.VK_OEM_MINUS, cmdVolDown),
+		key(co.VK_OEM_PLUS, cmdVolUp), // the = key
+		key('M', cmdMute),
 	}
 	for i := uint16(1); i <= 9; i++ {
 		list = append(list, key(co.VK('0'+i), cmdJump+i))
@@ -161,8 +150,10 @@ func (a *app) run() { a.wnd.RunAsMain() }
 
 func (a *app) events() {
 	a.wnd.On().WmCreate(func(_ ui.WmCreate) int {
+		darkTitleBar(a.wnd.Hwnd())
+		darkList(a.list)
 		a.startPlayer()
-		a.wnd.Hwnd().SetTimer(timerClock, 250)
+		a.wnd.Hwnd().SetTimer(timerTick, 100)
 		a.refresh()
 		go a.scan()
 		return 0
@@ -174,18 +165,16 @@ func (a *app) events() {
 			a.player.Quit()
 		}
 	})
-	a.wnd.On().WmTimer(timerClock, a.showClock)
-
-	a.btnKeep.On().BnClicked(a.keep)
-	a.btnDelete.On().BnClicked(a.delete)
-	a.btnSkip.On().BnClicked(a.skip)
-	a.btnUndo.On().BnClicked(a.undo)
+	a.wnd.On().WmTimer(timerTick, a.tick)
 
 	a.wnd.On().WmCommandAccelMenu(cmdKeep, a.keep)
 	a.wnd.On().WmCommandAccelMenu(cmdDelete, a.delete)
 	a.wnd.On().WmCommandAccelMenu(cmdSkip, a.skip)
 	a.wnd.On().WmCommandAccelMenu(cmdUndo, a.undo)
-	a.wnd.On().WmCommandAccelMenu(cmdPause, func() { a.mpv((*mpv.Player).TogglePause) })
+	a.wnd.On().WmCommandAccelMenu(cmdPause, a.togglePause)
+	a.wnd.On().WmCommandAccelMenu(cmdVolDown, func() { a.addVolume(-5) })
+	a.wnd.On().WmCommandAccelMenu(cmdVolUp, func() { a.addVolume(5) })
+	a.wnd.On().WmCommandAccelMenu(cmdMute, a.toggleMute)
 	a.wnd.On().WmCommandAccelMenu(cmdBack, func() { a.mpv(func(p *mpv.Player) error { return p.Seek(-seekStep) }) })
 	a.wnd.On().WmCommandAccelMenu(cmdForward, func() { a.mpv(func(p *mpv.Player) error { return p.Seek(seekStep) }) })
 	a.wnd.On().WmCommandAccelMenu(cmdSlower, func() { a.mpv(func(p *mpv.Player) error { return p.MultiplySpeed(1 / 1.1) }) })
@@ -239,8 +228,11 @@ func (a *app) startPlayer() {
 	}
 	p.Command("keybind", "LEFT", fmt.Sprintf("seek -%d", seekStep))
 	p.Command("keybind", "RIGHT", fmt.Sprintf("seek %d", seekStep))
-	p.Observe(1, "time-pos")
-	p.Observe(2, "duration")
+	p.Command("keybind", "-", "add volume -5")
+	p.Command("keybind", "=", "add volume 5")
+	for i, name := range []string{"time-pos", "duration", "volume", "mute", "pause"} {
+		p.Observe(i+1, name)
+	}
 
 	go func() {
 		for f := range a.mpvCmds {
@@ -254,15 +246,25 @@ func (a *app) readEvents(p *mpv.Player) {
 	for ev := range p.Events() {
 		switch ev.Event {
 		case "property-change":
-			var v float64
-			json.Unmarshal(ev.Data, &v) // null (nothing loaded) leaves 0
-			a.clockMu.Lock()
-			if ev.Name == "time-pos" {
-				a.pos = v
-			} else if ev.Name == "duration" {
-				a.dur = v
+			// Values are null while nothing is loaded, which leaves them zero.
+			var f float64
+			var b bool
+			json.Unmarshal(ev.Data, &f)
+			json.Unmarshal(ev.Data, &b)
+			a.stateMu.Lock()
+			switch ev.Name {
+			case "time-pos":
+				a.state.pos = f
+			case "duration":
+				a.state.dur = f
+			case "volume":
+				a.state.volume = f
+			case "mute":
+				a.state.muted = b
+			case "pause":
+				a.state.paused = b
 			}
-			a.clockMu.Unlock()
+			a.stateMu.Unlock()
 		case "client-message":
 			if len(ev.Args) == 2 && ev.Args[0] == "vidsort" {
 				a.ui(func() {
@@ -401,28 +403,8 @@ func (a *app) showCurrent() {
 	a.refresh()
 }
 
-// refresh updates the info line, buttons and status bar.
-func (a *app) refresh() {
-	v, ok := a.Current()
-	switch {
-	case a.q == nil:
-		a.info.Hwnd().SetWindowText("Looking for videos…")
-	case !ok:
-		a.info.Hwnd().SetWindowText("Nothing left to review.")
-	default:
-		a.info.Hwnd().SetWindowText(fmt.Sprintf("%s  ·  %s  ·  %s",
-			review.Size(v.Size), v.ModTime.Format("2 Jan 2006"), v.Path))
-	}
-	for _, b := range []*ui.Button{a.btnKeep, a.btnDelete, a.btnSkip} {
-		b.Hwnd().EnableWindow(ok)
-	}
-	a.btnUndo.Hwnd().EnableWindow(a.q != nil && a.q.CanUndo())
-
-	if a.q != nil {
-		a.status.Part(0).SetText(fmt.Sprintf("%d left · %s", len(a.q.Items), review.Size(a.q.TotalSize())))
-	}
-	a.status.Part(1).SetText("Freed " + review.Size(a.st.Freed))
-}
+// refresh redraws the panel: file details, buttons and status line.
+func (a *app) refresh() { a.panel.redraw() }
 
 // Current is the video under review, if the scan has finished and any are left.
 func (a *app) Current() (scan.Video, bool) {
@@ -432,18 +414,61 @@ func (a *app) Current() (scan.Video, bool) {
 	return a.q.Current()
 }
 
-func (a *app) showClock() {
-	a.clockMu.Lock()
-	pos, dur := a.pos, a.dur
-	a.clockMu.Unlock()
-	text := ""
-	if a.playing != "" {
-		text = review.Clock(pos) + " / " + review.Clock(dur)
-	}
-	a.status.Part(2).SetText(text)
+func (a *app) playerState() playerState {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	return a.state
 }
 
-func (a *app) message(s string) { a.status.Part(3).SetText(s) }
+// tick redraws the panel when playback has moved on.
+func (a *app) tick() {
+	if st := a.playerState(); st != a.drawn {
+		a.drawn = st
+		a.panel.redraw()
+	}
+}
+
+func (a *app) togglePause() { a.mpv((*mpv.Player).TogglePause) }
+
+func (a *app) toggleMute() {
+	a.mpv(func(p *mpv.Player) error { _, err := p.Command("cycle", "mute"); return err })
+}
+
+// seekFraction jumps to frac (0–1) of the way through. Exact seeks decode
+// up to the precise frame; the others land on the nearest keyframe, which
+// is much quicker while dragging.
+func (a *app) seekFraction(frac float64, exact bool) {
+	if a.playing == "" {
+		return
+	}
+	flags := "absolute-percent+keyframes"
+	if exact {
+		flags = "absolute-percent+exact"
+	}
+	a.mpv(func(p *mpv.Player) error { _, err := p.Command("seek", frac*100, flags); return err })
+}
+
+func (a *app) setVolume(v float64) {
+	v = min(max(v, 0), 100)
+	a.stateMu.Lock()
+	a.state.volume, a.state.muted = v, false // show it straight away
+	a.stateMu.Unlock()
+	a.mpv(func(p *mpv.Player) error {
+		if _, err := p.Command("set_property", "mute", false); err != nil {
+			return err
+		}
+		_, err := p.Command("set_property", "volume", v)
+		return err
+	})
+	a.panel.redraw()
+}
+
+func (a *app) addVolume(d float64) { a.setVolume(a.playerState().volume + d) }
+
+func (a *app) message(s string) {
+	a.msg = s
+	a.panel.redraw()
+}
 
 // allowDecision rate-limits keep and delete so a held or bounced key can't
 // run through several files.

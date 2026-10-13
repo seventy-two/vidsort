@@ -27,7 +27,10 @@ func Start(mpvPath string, wid uintptr) (*Player, error) {
 		"--idle=yes",
 		"--force-window=yes",
 		"--keep-open=yes", // stay on the last frame rather than closing the file
-		"--osc=yes",
+		// Decode on the GPU where it can: 8K HEVC at 60fps is too much
+		// for the CPU alone.
+		"--hwdec=auto-safe",
+		"--volume-max=100", // so the volume bar's 0–100 covers the range
 		"--osd-level=1",
 		"--msg-level=all=no",
 	)

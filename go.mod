@@ -6,9 +6,7 @@ require (
 	github.com/Microsoft/go-winio v0.6.3
 	github.com/rodrigocfd/windigo v0.2.7
 	github.com/stretchr/testify v1.12.1
+	golang.org/x/sys v0.48.0
 )
 
-require (
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/sys v0.48.0 // indirect
-)
+require go.yaml.in/yaml/v3 v3.0.5 // indirect
