@@ -403,7 +403,15 @@ func (a *app) showCurrent() {
 	}
 	if ok && v.Path != a.playing {
 		path := v.Path
-		a.mpv(func(p *mpv.Player) error { return p.LoadFile(path) })
+		a.mpv(func(p *mpv.Player) error {
+			if err := p.LoadFile(path); err != nil {
+				return err
+			}
+			// Reaching the end of a file pauses it (keep-open), and the pause
+			// would carry over to this one.
+			_, err := p.Command("set_property", "pause", false)
+			return err
+		})
 		a.playing = path
 	} else if !ok && a.playing != "" {
 		a.mpv((*mpv.Player).Stop)
