@@ -99,6 +99,7 @@ func newApp(cfg config.Config, mpvPath string, st *store.Store, folders []string
 	accel, _ := win.CreateAcceleratorTable(a.shortcuts()...)
 	a.wnd = ui.NewMain(ui.OptsMain().
 		Title(windowTitle(folders)).
+		ClassIconId(2). // the icon group rsrc_windows_amd64.syso holds
 		ClassBrush(solidBrush(colBg)).
 		Size(ui.Dpi(1400, 860)).
 		Style(co.WS_CAPTION | co.WS_SYSMENU | co.WS_CLIPCHILDREN | co.WS_BORDER | co.WS_VISIBLE |

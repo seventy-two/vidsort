@@ -129,5 +129,9 @@ go test ./...   # the av1 tests use a local ffmpeg with libsvtav1, or skip
 GOOS=windows go build -trimpath -ldflags "-s -w -H=windowsgui" -o vidsort.exe .
 ```
 
-`rsrc_windows_amd64.syso` is windigo's resource file: an icon and a manifest
-for visual styles and DPI awareness.
+`rsrc_windows_amd64.syso` holds the icon and manifest (visual styles and DPI
+awareness), from `res/`:
+
+```sh
+go run github.com/akavel/rsrc@latest -manifest res/vidsort.manifest -ico res/vidsort.ico -arch amd64 -o rsrc_windows_amd64.syso
+```
